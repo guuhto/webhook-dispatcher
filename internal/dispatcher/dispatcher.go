@@ -1,5 +1,5 @@
-// Package dispatcher consome a fila e entrega os webhooks via HTTP POST,
-// com retry e backoff exponencial.
+// Package dispatcher consumes the queue and delivers webhooks via HTTP POST,
+// with retry and exponential backoff.
 package dispatcher
 
 import (
@@ -15,29 +15,29 @@ import (
 	"github.com/guuhto/webhook-dispatcher/internal/queue"
 )
 
-// Config configura o Dispatcher. Campos zerados recebem valores padrão.
+// Config configures the Dispatcher. Zero-valued fields get defaults.
 type Config struct {
-	BaseDelay   time.Duration // atraso inicial do backoff (padrão 1s)
-	MaxDelay    time.Duration // teto do atraso (padrão 1min)
-	MaxAttempts int           // total de tentativas por evento (padrão 5)
-	HTTPClient  *http.Client  // padrão: cliente com timeout de 10s
-	// Sleep espera d ou retorna o erro de ctx; injetável para testes.
+	BaseDelay   time.Duration // initial backoff delay (default 1s)
+	MaxDelay    time.Duration // delay cap (default 1min)
+	MaxAttempts int           // total attempts per event (default 5)
+	HTTPClient  *http.Client  // default: client with a 10s timeout
+	// Sleep waits for d or returns the ctx error; injectable for tests.
 	Sleep func(ctx context.Context, d time.Duration) error
-	// OnResult, se não nulo, é chamado ao fim do processamento de cada evento
-	// (err nil = entregue).
+	// OnResult, if non-nil, is called after each event is processed
+	// (nil err = delivered).
 	OnResult func(e event.Event, err error)
 }
 
-// Dispatcher entrega eventos retirados de uma fila.
+// Dispatcher delivers events taken from a queue.
 type Dispatcher struct {
 	q   queue.Queue
 	cfg Config
 }
 
-// ErrMaxAttempts indica que as tentativas se esgotaram.
-var ErrMaxAttempts = errors.New("dispatcher: tentativas esgotadas")
+// ErrMaxAttempts indicates that all attempts were exhausted.
+var ErrMaxAttempts = errors.New("dispatcher: attempts exhausted")
 
-// New cria um Dispatcher aplicando os padrões da configuração.
+// New creates a Dispatcher, applying the configuration defaults.
 func New(q queue.Queue, cfg Config) *Dispatcher {
 	if cfg.BaseDelay <= 0 {
 		cfg.BaseDelay = time.Second
@@ -68,12 +68,12 @@ func realSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Backoff retorna o atraso após a falha de índice attempt (0 = primeira):
-// BaseDelay * 2^attempt, limitado a MaxDelay.
+// Backoff returns the delay after the failure at index attempt (0 = first):
+// BaseDelay * 2^attempt, capped at MaxDelay.
 func (d *Dispatcher) Backoff(attempt int) time.Duration {
 	delay := d.cfg.BaseDelay
 	for i := 0; i < attempt; i++ {
-		if delay >= d.cfg.MaxDelay/2 { // próximo dobro passaria do teto (e evita overflow)
+		if delay >= d.cfg.MaxDelay/2 { // next doubling would exceed the cap (and avoids overflow)
 			return d.cfg.MaxDelay
 		}
 		delay *= 2
@@ -84,7 +84,7 @@ func (d *Dispatcher) Backoff(attempt int) time.Duration {
 	return delay
 }
 
-// Run faz loop em Dequeue até ctx ser cancelado; retorna o erro de ctx.
+// Run loops on Dequeue until ctx is cancelled; it returns the ctx error.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	for {
 		e, err := d.q.Dequeue(ctx)
@@ -101,8 +101,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 }
 
-// Deliver entrega o evento, repetindo com backoff em falhas transitórias
-// (erro de rede, 5xx, 429). Outros 4xx não são repetidos.
+// Deliver delivers the event, retrying with backoff on transient failures
+// (network error, 5xx, 429). Other 4xx responses are not retried.
 func (d *Dispatcher) Deliver(ctx context.Context, e event.Event) error {
 	var lastErr error
 	for attempt := 0; attempt < d.cfg.MaxAttempts; attempt++ {
@@ -125,7 +125,7 @@ func (d *Dispatcher) Deliver(ctx context.Context, e event.Event) error {
 	return fmt.Errorf("%w (%d): %v", ErrMaxAttempts, d.cfg.MaxAttempts, lastErr)
 }
 
-// post faz uma tentativa; retry indica se vale tentar de novo.
+// post makes one attempt; retry says whether trying again is worthwhile.
 func (d *Dispatcher) post(ctx context.Context, e event.Event) (retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL, bytes.NewReader(e.Payload))
 	if err != nil {

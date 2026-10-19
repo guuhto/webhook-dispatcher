@@ -36,5 +36,3 @@ Resposta `202 Accepted`:
 ```sh
 go test -race ./...
 ```
-
-> Observação: o worker de entrega (`internal/dispatcher`) será ligado no `main` após o merge da t2.

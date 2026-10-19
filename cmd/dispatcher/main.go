@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guuhto/webhook-dispatcher/internal/dispatcher"
+	"github.com/guuhto/webhook-dispatcher/internal/event"
 	"github.com/guuhto/webhook-dispatcher/internal/queue"
 	"github.com/guuhto/webhook-dispatcher/internal/server"
 )
@@ -30,7 +32,21 @@ func main() {
 	q := queue.NewMemory()
 	srv := &http.Server{Addr: *addr, Handler: server.New(q)}
 
-	// TODO: start the internal/dispatcher worker consuming q once t2 is merged.
+	// Delivery worker: runs until the signal context is cancelled.
+	d := dispatcher.New(q, dispatcher.Config{OnResult: func(e event.Event, err error) {
+		if err != nil {
+			log.Printf("entrega do evento %s falhou: %v", e.ID, err)
+			return
+		}
+		log.Printf("evento %s entregue", e.ID)
+	}})
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		if err := d.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("worker encerrou com erro: %v", err)
+		}
+	}()
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -48,4 +64,6 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("erro no shutdown: %v", err)
 	}
+	// Wait for the worker to finish its in-flight delivery.
+	<-workerDone
 }
