@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/guuhto/webhook-dispatcher/internal/deadletter"
 	"github.com/guuhto/webhook-dispatcher/internal/event"
 	"github.com/guuhto/webhook-dispatcher/internal/queue"
 )
@@ -32,13 +33,34 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-// New returns the HTTP handler serving POST /webhooks.
-func New(q queue.Queue) http.Handler {
+// DeadLetters is the read side of the dead letter store.
+type DeadLetters interface {
+	List() []deadletter.Entry
+}
+
+// New returns the HTTP handler serving POST /webhooks and GET /webhooks/dead.
+func New(q queue.Queue, dead DeadLetters) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhooks", func(w http.ResponseWriter, r *http.Request) {
 		handleWebhook(q, w, r)
 	})
+	mux.HandleFunc("/webhooks/dead", func(w http.ResponseWriter, r *http.Request) {
+		handleDead(dead, w, r)
+	})
 	return mux
+}
+
+func handleDead(dead DeadLetters, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{"method not allowed"})
+		return
+	}
+	entries := dead.List()
+	if entries == nil {
+		entries = []deadletter.Entry{} // encode as [] rather than null
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func handleWebhook(q queue.Queue, w http.ResponseWriter, r *http.Request) {
