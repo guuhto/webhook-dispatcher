@@ -1,4 +1,4 @@
-// Package queue define a fila de eventos e uma implementação em memória.
+// Package queue defines the event queue and an in-memory implementation.
 package queue
 
 import (
@@ -8,24 +8,24 @@ import (
 	"github.com/guuhto/webhook-dispatcher/internal/event"
 )
 
-// Queue é a fila de eventos a despachar.
+// Queue is the queue of events to dispatch.
 type Queue interface {
-	// Enqueue adiciona o evento; retorna erro se ctx já estiver cancelado.
+	// Enqueue adds the event; returns an error if ctx is already cancelled.
 	Enqueue(ctx context.Context, e event.Event) error
-	// Dequeue bloqueia até haver um item ou ctx ser cancelado.
+	// Dequeue blocks until an item is available or ctx is cancelled.
 	Dequeue(ctx context.Context) (event.Event, error)
 }
 
-// Memory é uma fila FIFO ilimitada em memória, segura para concorrência.
+// Memory is an unbounded in-memory FIFO queue, safe for concurrent use.
 type Memory struct {
 	mu     sync.Mutex
 	items  []event.Event
-	signal chan struct{} // fechado e recriado a cada Enqueue para acordar quem espera
+	signal chan struct{} // closed and recreated on every Enqueue to wake up waiters
 }
 
 var _ Queue = (*Memory)(nil)
 
-// NewMemory cria uma fila em memória vazia.
+// NewMemory creates an empty in-memory queue.
 func NewMemory() *Memory {
 	return &Memory{signal: make(chan struct{})}
 }
