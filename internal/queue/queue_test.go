@@ -36,7 +36,7 @@ func TestDequeueBlocksUntilEnqueue(t *testing.T) {
 	}()
 	select {
 	case <-got:
-		t.Fatal("Dequeue não bloqueou")
+		t.Fatal("Dequeue did not block")
 	case <-time.After(50 * time.Millisecond):
 	}
 	_ = q.Enqueue(context.Background(), event.Event{ID: "a"})
@@ -46,7 +46,7 @@ func TestDequeueBlocksUntilEnqueue(t *testing.T) {
 			t.Fatalf("ID = %q", e.ID)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Dequeue não acordou")
+		t.Fatal("Dequeue did not wake up")
 	}
 }
 
@@ -66,7 +66,7 @@ func TestDequeueReturnsCtxErrOnCancel(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Dequeue não retornou")
+		t.Fatal("Dequeue did not return")
 	}
 }
 
@@ -124,11 +124,11 @@ func TestConcurrentProducersAndConsumers(t *testing.T) {
 	cancel()
 
 	if len(seen) != total {
-		t.Fatalf("recebidos %d únicos, esperado %d", len(seen), total)
+		t.Fatalf("received %d unique, want %d", len(seen), total)
 	}
 	for id, n := range seen {
 		if n != 1 {
-			t.Fatalf("%s entregue %d vezes", id, n)
+			t.Fatalf("%s delivered %d times", id, n)
 		}
 	}
 }
@@ -153,6 +153,6 @@ func TestDequeueCanceledCtxDoesNotConsumeItem(t *testing.T) {
 	}
 	e, err := q.Dequeue(context.Background())
 	if err != nil || e.ID != "x" {
-		t.Fatalf("item perdido: %v, %v", e, err)
+		t.Fatalf("item lost: %v, %v", e, err)
 	}
 }

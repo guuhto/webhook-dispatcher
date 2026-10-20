@@ -23,7 +23,7 @@ func main() {
 	if v := os.Getenv("PORT_ADDR"); v != "" {
 		def = v
 	}
-	addr := flag.String("addr", def, "endereço de escuta (env PORT_ADDR)")
+	addr := flag.String("addr", def, "listen address (env PORT_ADDR)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -35,34 +35,34 @@ func main() {
 	// Delivery worker: runs until the signal context is cancelled.
 	d := dispatcher.New(q, dispatcher.Config{OnResult: func(e event.Event, err error) {
 		if err != nil {
-			log.Printf("entrega do evento %s falhou: %v", e.ID, err)
+			log.Printf("delivery of event %s failed: %v", e.ID, err)
 			return
 		}
-		log.Printf("evento %s entregue", e.ID)
+		log.Printf("event %s delivered", e.ID)
 	}})
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
 		if err := d.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("worker encerrou com erro: %v", err)
+			log.Printf("worker exited with error: %v", err)
 		}
 	}()
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	log.Printf("escutando em %s", *addr)
+	log.Printf("listening on %s", *addr)
 
 	select {
 	case err := <-errCh:
-		log.Fatalf("servidor falhou: %v", err)
+		log.Fatalf("server failed: %v", err)
 	case <-ctx.Done():
 	}
 
-	log.Print("encerrando...")
+	log.Print("shutting down...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Printf("erro no shutdown: %v", err)
+		log.Printf("shutdown error: %v", err)
 	}
 	// Wait for the worker to finish its in-flight delivery.
 	<-workerDone
