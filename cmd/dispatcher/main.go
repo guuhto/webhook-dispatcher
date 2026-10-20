@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guuhto/webhook-dispatcher/internal/deadletter"
 	"github.com/guuhto/webhook-dispatcher/internal/dispatcher"
 	"github.com/guuhto/webhook-dispatcher/internal/event"
 	"github.com/guuhto/webhook-dispatcher/internal/queue"
@@ -30,7 +31,7 @@ func main() {
 	defer stop()
 
 	q := queue.NewMemory()
-	srv := &http.Server{Addr: *addr, Handler: server.New(q)}
+	srv := &http.Server{Addr: *addr, Handler: server.New(q, deadletter.NewStore())}
 
 	// Delivery worker: runs until the signal context is cancelled.
 	d := dispatcher.New(q, dispatcher.Config{OnResult: func(e event.Event, err error) {
