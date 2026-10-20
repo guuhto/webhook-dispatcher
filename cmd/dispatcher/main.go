@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guuhto/webhook-dispatcher/internal/config"
 	"github.com/guuhto/webhook-dispatcher/internal/deadletter"
 	"github.com/guuhto/webhook-dispatcher/internal/dispatcher"
 	"github.com/guuhto/webhook-dispatcher/internal/event"
@@ -30,17 +31,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	q := queue.NewMemory()
-	srv := &http.Server{Addr: *addr, Handler: server.New(q, deadletter.NewStore())}
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("config: backoff base=%v multiplier=%v max=%v, max attempts=%d",
+		cfg.BackoffBase, cfg.BackoffMultiplier, cfg.BackoffMax, cfg.MaxAttempts)
+
+	handler, d := build(cfg, nil)
+	srv := &http.Server{Addr: *addr, Handler: handler}
 
 	// Delivery worker: runs until the signal context is cancelled.
-	d := dispatcher.New(q, dispatcher.Config{OnResult: func(e event.Event, err error) {
-		if err != nil {
-			log.Printf("delivery of event %s failed: %v", e.ID, err)
-			return
-		}
-		log.Printf("event %s delivered", e.ID)
-	}})
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
@@ -67,4 +68,29 @@ func main() {
 	}
 	// Wait for the worker to finish its in-flight delivery.
 	<-workerDone
+}
+
+// build wires the queue, dead letter store, HTTP handler and dispatcher.
+// sleep may be nil (real sleeping); tests inject a no-op.
+func build(cfg config.Config, sleep func(context.Context, time.Duration) error) (http.Handler, *dispatcher.Dispatcher) {
+	q := queue.NewMemory()
+	store := deadletter.NewStore()
+	d := dispatcher.New(q, dispatcher.Config{
+		BaseDelay:   cfg.BackoffBase,
+		Multiplier:  cfg.BackoffMultiplier,
+		MaxDelay:    cfg.BackoffMax,
+		MaxAttempts: cfg.MaxAttempts,
+		Sleep:       sleep,
+		OnResult: func(e event.Event, err error) {
+			if err != nil {
+				log.Printf("delivery of event %s failed: %v", e.ID, err)
+				return
+			}
+			log.Printf("event %s delivered", e.ID)
+		},
+		OnDead: func(e event.Event, err error) {
+			store.Add(deadletter.Entry{Event: e, Error: err.Error(), FailedAt: time.Now()})
+		},
+	})
+	return server.New(q, store), d
 }
