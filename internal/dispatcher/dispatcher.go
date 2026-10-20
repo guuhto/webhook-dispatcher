@@ -17,15 +17,20 @@ import (
 
 // Config configures the Dispatcher. Zero-valued fields get defaults.
 type Config struct {
-	BaseDelay   time.Duration // initial backoff delay (default 1s)
-	MaxDelay    time.Duration // delay cap (default 1min)
-	MaxAttempts int           // total attempts per event (default 5)
+	BaseDelay   time.Duration // initial backoff delay (default 30s)
+	Multiplier  float64       // backoff growth factor, must be >= 1 (default 2)
+	MaxDelay    time.Duration // delay cap (default 1h)
+	MaxAttempts int           // total attempts per event (default 8)
 	HTTPClient  *http.Client  // default: client with a 10s timeout
 	// Sleep waits for d or returns the ctx error; injectable for tests.
 	Sleep func(ctx context.Context, d time.Duration) error
 	// OnResult, if non-nil, is called after each event is processed
 	// (nil err = delivered).
 	OnResult func(e event.Event, err error)
+	// OnDead, if non-nil, is called once when an event exhausts its retries
+	// (ErrMaxAttempts only; not for permanent 4xx or ctx cancellation).
+	// e.Attempts is the number of attempts made.
+	OnDead func(e event.Event, err error)
 }
 
 // Dispatcher delivers events taken from a queue.
@@ -40,13 +45,16 @@ var ErrMaxAttempts = errors.New("dispatcher: attempts exhausted")
 // New creates a Dispatcher, applying the configuration defaults.
 func New(q queue.Queue, cfg Config) *Dispatcher {
 	if cfg.BaseDelay <= 0 {
-		cfg.BaseDelay = time.Second
+		cfg.BaseDelay = 30 * time.Second
+	}
+	if cfg.Multiplier < 1 {
+		cfg.Multiplier = 2
 	}
 	if cfg.MaxDelay <= 0 {
-		cfg.MaxDelay = time.Minute
+		cfg.MaxDelay = time.Hour
 	}
 	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 5
+		cfg.MaxAttempts = 8
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 10 * time.Second}
@@ -69,19 +77,20 @@ func realSleep(ctx context.Context, d time.Duration) error {
 }
 
 // Backoff returns the delay after the failure at index attempt (0 = first):
-// BaseDelay * 2^attempt, capped at MaxDelay.
+// BaseDelay * Multiplier^attempt, capped at MaxDelay.
 func (d *Dispatcher) Backoff(attempt int) time.Duration {
-	delay := d.cfg.BaseDelay
+	maxF := float64(d.cfg.MaxDelay)
+	delay := float64(d.cfg.BaseDelay)
 	for i := 0; i < attempt; i++ {
-		if delay >= d.cfg.MaxDelay/2 { // next doubling would exceed the cap (and avoids overflow)
-			return d.cfg.MaxDelay
+		if delay >= maxF || d.cfg.Multiplier == 1 {
+			break
 		}
-		delay *= 2
+		delay *= d.cfg.Multiplier // float math cannot overflow int64; capped below
 	}
-	if delay > d.cfg.MaxDelay {
+	if delay >= maxF {
 		return d.cfg.MaxDelay
 	}
-	return delay
+	return time.Duration(delay)
 }
 
 // Run loops on Dequeue until ctx is cancelled; it returns the ctx error.
@@ -122,7 +131,11 @@ func (d *Dispatcher) Deliver(ctx context.Context, e event.Event) error {
 			return serr
 		}
 	}
-	return fmt.Errorf("%w (%d): %v", ErrMaxAttempts, d.cfg.MaxAttempts, lastErr)
+	err := fmt.Errorf("%w (%d): %v", ErrMaxAttempts, d.cfg.MaxAttempts, lastErr)
+	if d.cfg.OnDead != nil {
+		d.cfg.OnDead(e, err)
+	}
+	return err
 }
 
 // post makes one attempt; retry says whether trying again is worthwhile.

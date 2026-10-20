@@ -169,3 +169,74 @@ func TestRunStopsOnCtxCancel(t *testing.T) {
 		t.Fatalf("Run=%v", err)
 	}
 }
+
+func TestBackoffTable(t *testing.T) {
+	s := time.Second
+	tests := []struct {
+		name    string
+		cfg     Config
+		attempt int
+		want    time.Duration
+	}{
+		{"defaults a0", Config{}, 0, 30 * s},
+		{"defaults a1", Config{}, 1, 60 * s},
+		{"defaults a5", Config{}, 5, 960 * s},
+		{"defaults capped", Config{}, 7, time.Hour},
+		{"mult 3", Config{BaseDelay: s, Multiplier: 3, MaxDelay: time.Hour}, 3, 27 * s},
+		{"mult 1.5", Config{BaseDelay: 2 * s, Multiplier: 1.5, MaxDelay: time.Hour}, 2, 4500 * time.Millisecond},
+		{"mult 1 constant", Config{BaseDelay: s, Multiplier: 1, MaxDelay: time.Hour}, 50, s},
+		{"invalid mult -> 2", Config{BaseDelay: s, Multiplier: 0.5, MaxDelay: time.Hour}, 3, 8 * s},
+		{"overflow safe", Config{BaseDelay: time.Hour, Multiplier: 1000, MaxDelay: 100 * time.Hour}, 100000, 100 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := New(queue.NewMemory(), tt.cfg).Backoff(tt.attempt); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOnDeadCalledOnExhaustion(t *testing.T) {
+	srv, _ := statusServer(t, 503)
+	var deadEvents []event.Event
+	var deadErrs []error
+	fs := &fakeSleep{}
+	d := New(queue.NewMemory(), Config{
+		BaseDelay: time.Second, Multiplier: 3, MaxDelay: time.Hour, MaxAttempts: 4, Sleep: fs.Sleep,
+		OnDead: func(e event.Event, err error) { deadEvents = append(deadEvents, e); deadErrs = append(deadErrs, err) },
+	})
+	err := d.Deliver(context.Background(), newTestEvent(srv.URL))
+	if !errors.Is(err, ErrMaxAttempts) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(deadEvents) != 1 || deadEvents[0].Attempts != 4 || !errors.Is(deadErrs[0], ErrMaxAttempts) {
+		t.Fatalf("dead=%+v errs=%v", deadEvents, deadErrs)
+	}
+	want := []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}
+	if len(fs.delays) != 3 {
+		t.Fatalf("delays=%v", fs.delays)
+	}
+	for i, w := range want {
+		if fs.delays[i] != w {
+			t.Errorf("delay[%d]=%v want %v", i, fs.delays[i], w)
+		}
+	}
+}
+
+func TestOnDeadNotCalledOnSuccessPermanentOrCancel(t *testing.T) {
+	calls := 0
+	onDead := func(event.Event, error) { calls++ }
+	mk := func(fs *fakeSleep) *Dispatcher {
+		return New(queue.NewMemory(), Config{MaxAttempts: 3, Sleep: fs.Sleep, OnDead: onDead})
+	}
+	ok, _ := statusServer(t, 200)
+	_ = mk(&fakeSleep{}).Deliver(context.Background(), newTestEvent(ok.URL))
+	bad, _ := statusServer(t, 404)
+	_ = mk(&fakeSleep{}).Deliver(context.Background(), newTestEvent(bad.URL))
+	flaky, _ := statusServer(t, 500)
+	_ = mk(&fakeSleep{err: context.Canceled}).Deliver(context.Background(), newTestEvent(flaky.URL))
+	if calls != 0 {
+		t.Fatalf("OnDead called %d times", calls)
+	}
+}
